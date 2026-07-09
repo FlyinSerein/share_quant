@@ -1,0 +1,35 @@
+data_root: data
+duckdb_path: data/share_quant.duckdb
+default_start_date: "2021-01-01"
+default_end_date: today
+
+tushare:
+  token_env: TUSHARE_TOKEN
+  max_retries: 3
+  retry_backoff_seconds: 2
+  rate_limit_seconds: 0.25
+
+datasets:
+  stock_basic: true
+  trade_cal: true
+  namechange: true
+  stock_company: true
+  daily: true
+  daily_basic: true
+  adj_factor: true
+  suspend_d: true
+  stk_limit: true
+  income_vip: true
+  balancesheet_vip: true
+  cashflow_vip: true
+  fina_indicator_vip: true
+  dividend: true
+  top10_holders: true
+  top10_floatholders: true
+  moneyflow: true
+  top_list: true
+  index_basic: true
+  index_daily: true
+  index_weight: true
+  index_classify: true
+  index_member_all: true
