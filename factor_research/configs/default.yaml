@@ -1,0 +1,2 @@
+database_path: ../database/data/share_quant.duckdb
+output_root: outputs

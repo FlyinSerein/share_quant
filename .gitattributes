@@ -1,0 +1,7 @@
+* text=auto
+
+# Historical research artifacts must remain byte-for-byte stable across checkouts.
+factor_research/outputs/** -text
+factor_research/outputs/**/*.png binary
+factor_research/outputs/**/*.docx binary
+factor_research/outputs/**/*.zip binary

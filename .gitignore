@@ -8,7 +8,6 @@ __pycache__/
 venv/
 build/
 dist/
-data/
-research/
-tests/test_factor_combo_research.py
-.env
+database/data/
+database/.env
+factor_research/.env
