@@ -40,3 +40,31 @@ python research\factor_combo\run_factor_backtest.py --start 2022-01-01 --end 202
 - `outputs/tables/turnover.csv`：每次调仓换手。
 - `outputs/tables/rebalance_weights.csv`：每次调仓持仓权重。
 - `outputs/images/*.png`：净值、回撤和表格图像。
+
+## 行业和市值中性化回测输出
+
+主回测会额外生成基于 `neutralized_score` 的 Top20% 结果。原始结果仍写入 `outputs/tables/` 和 `outputs/images/`；中性化结果默认写入：
+
+```text
+research/factor_combo/outputs/neutralized/
+```
+
+可通过 `--neutralized-subdir` 调整 `outputs/` 下的子目录名：
+
+```powershell
+python research\factor_combo\run_factor_backtest.py --neutralized-subdir neutralized_smoke
+```
+
+中性化结果包含：
+
+- `outputs/neutralized/tables/factor_metrics.csv`
+- `outputs/neutralized/tables/factor_coverage.csv`
+- `outputs/neutralized/tables/nav_by_factor.csv`
+- `outputs/neutralized/tables/monthly_returns.csv`
+- `outputs/neutralized/tables/turnover.csv`
+- `outputs/neutralized/tables/rebalance_weights.csv`
+- `outputs/neutralized/tables/factor_metrics_comparison.csv`
+- `outputs/neutralized/images/*.png`
+- `outputs/neutralized/report.md`
+
+中性化方法：在现有因子分数已经完成去极值和标准化后，按每个 `factor + trade_date` 对 `score ~ log(total_mv) + industry dummies` 做截面回归，使用残差 `neutralized_score` 进行排序选股；不会再次去极值或标准化。

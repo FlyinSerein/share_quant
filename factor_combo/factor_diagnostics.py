@@ -18,6 +18,7 @@ try:
         build_suspension_matrix,
         build_rebalance_calendar,
         filter_scores_for_execution_universe,
+        neutralize_scores,
         normalize_factor_panel,
         select_top_quantile_weights,
         yyyymmdd,
@@ -31,6 +32,7 @@ except ImportError:  # pragma: no cover - supports direct script execution.
         build_suspension_matrix,
         build_rebalance_calendar,
         filter_scores_for_execution_universe,
+        neutralize_scores,
         normalize_factor_panel,
         select_top_quantile_weights,
         yyyymmdd,
@@ -302,47 +304,6 @@ def compute_yearly_period_returns(period_returns: pd.DataFrame, return_col: str)
     )
 
 
-def neutralize_scores(scores: pd.DataFrame, exposures: pd.DataFrame, score_col: str = "score") -> pd.DataFrame:
-    required_scores = {"factor", "trade_date", "ts_code", score_col}
-    required_exposures = {"trade_date", "ts_code", "industry", "log_total_mv"}
-    if required_scores - set(scores.columns):
-        raise ValueError(f"scores must include factor, trade_date, ts_code, {score_col}")
-    if required_exposures - set(exposures.columns):
-        raise ValueError("exposures must include trade_date, ts_code, industry, log_total_mv")
-    if scores.empty:
-        return scores.assign(neutralized_score=pd.Series(dtype="float64"))
-
-    merged = scores.merge(exposures, on=["trade_date", "ts_code"], how="left")
-    merged["industry"] = merged["industry"].fillna("Unknown")
-    merged["log_total_mv"] = pd.to_numeric(merged["log_total_mv"], errors="coerce")
-    frames = []
-    for (_factor, _trade_date), group in merged.groupby(["factor", "trade_date"], sort=True):
-        temp = group.copy()
-        y = pd.to_numeric(temp[score_col], errors="coerce")
-        valid_mask = y.notna()
-        temp["neutralized_score"] = pd.NA
-        if valid_mask.sum() < 3 or y[valid_mask].nunique() <= 1:
-            frames.append(temp)
-            continue
-        work = temp.loc[valid_mask].copy()
-        size = work["log_total_mv"].astype(float)
-        size = size.fillna(size.mean() if size.notna().any() else 0.0)
-        industry_dummies = pd.get_dummies(work["industry"].fillna("Unknown"), prefix="industry", drop_first=True, dtype=float)
-        x = pd.concat(
-            [
-                pd.Series(1.0, index=work.index, name="intercept"),
-                size.rename("log_total_mv"),
-                industry_dummies,
-            ],
-            axis=1,
-        )
-        beta, *_ = np.linalg.lstsq(x.to_numpy(dtype=float), y.loc[work.index].to_numpy(dtype=float), rcond=None)
-        residual = y.loc[work.index].to_numpy(dtype=float) - x.to_numpy(dtype=float).dot(beta)
-        temp.loc[work.index, "neutralized_score"] = residual
-        frames.append(temp)
-    return pd.concat(frames, ignore_index=True)
-
-
 def compute_size_exposure(scores: pd.DataFrame, weights: pd.DataFrame, exposures: pd.DataFrame) -> pd.DataFrame:
     if scores.empty or weights.empty:
         return pd.DataFrame()
@@ -505,46 +466,7 @@ class FactorDiagnosticsRunner:
         )
 
     def _load_exposures(self, con: duckdb.DuckDBPyConnection, signal_dates: pd.Series) -> pd.DataFrame:
-        if signal_dates.empty:
-            return pd.DataFrame(columns=["trade_date", "ts_code", "total_mv", "log_total_mv", "industry"])
-        con.register("diagnostic_signal_dates", pd.DataFrame({"trade_date": signal_dates}))
-        daily_basic = self._research._silver_path("daily_basic")
-        size = con.execute(
-            f"""
-            select
-                db.trade_date,
-                db.ts_code,
-                db.total_mv,
-                case when db.total_mv > 0 then ln(db.total_mv) else null end as log_total_mv
-            from read_parquet('{daily_basic}') db
-            join diagnostic_signal_dates s using (trade_date)
-            """
-        ).fetchdf()
-        industry = con.execute(
-            """
-            with candidates as (
-                select
-                    s.trade_date,
-                    i.ts_code,
-                    i.l1_name as industry,
-                    row_number() over (
-                        partition by s.trade_date, i.ts_code
-                        order by i.in_date desc
-                    ) as rn
-                from diagnostic_signal_dates s
-                join v_industry_data i
-                  on i.ts_code is not null
-                 and cast(i.in_date as varchar) <= s.trade_date
-                 and (i.out_date is null or s.trade_date < cast(i.out_date as varchar))
-            )
-            select trade_date, ts_code, industry
-            from candidates
-            where rn = 1
-            """
-        ).fetchdf()
-        exposures = size.merge(industry, on=["trade_date", "ts_code"], how="left")
-        exposures["industry"] = exposures["industry"].fillna("Unknown")
-        return exposures
+        return self._research._load_exposures(con, signal_dates)
 
     def _write_outputs(self, **frames: object) -> dict[str, Path]:
         mapping = {

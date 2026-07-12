@@ -14,6 +14,11 @@ def main() -> int:
     parser.add_argument("--benchmark", default="000985.CSI", help="Benchmark index code.")
     parser.add_argument("--transaction-cost", type=float, default=0.001, help="One-way transaction cost.")
     parser.add_argument("--output-dir", default=None, help="Output directory. Defaults to this subproject's outputs/.")
+    parser.add_argument(
+        "--neutralized-subdir",
+        default="neutralized",
+        help="Subdirectory under output-dir for industry/size neutralized results.",
+    )
     args = parser.parse_args()
 
     here = Path(__file__).resolve().parent
@@ -28,6 +33,7 @@ def main() -> int:
         warmup_start=args.warmup_start,
         benchmark=args.benchmark,
         transaction_cost=args.transaction_cost,
+        neutralized_subdir=args.neutralized_subdir,
     )
     paths = runner.run()
     print("Factor backtest finished.")

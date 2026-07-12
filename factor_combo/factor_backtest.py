@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 
@@ -87,6 +88,47 @@ def normalize_factor_panel(panel: pd.DataFrame, specs: Iterable[FactorSpec] = FA
         .astype("float64")
     )
     return normalized.drop(columns=["direction", "directed_value"])
+
+
+def neutralize_scores(scores: pd.DataFrame, exposures: pd.DataFrame, score_col: str = "score") -> pd.DataFrame:
+    required_scores = {"factor", "trade_date", "ts_code", score_col}
+    required_exposures = {"trade_date", "ts_code", "industry", "log_total_mv"}
+    if required_scores - set(scores.columns):
+        raise ValueError(f"scores must include factor, trade_date, ts_code, {score_col}")
+    if required_exposures - set(exposures.columns):
+        raise ValueError("exposures must include trade_date, ts_code, industry, log_total_mv")
+    if scores.empty:
+        return scores.assign(neutralized_score=pd.Series(dtype="float64"))
+
+    merged = scores.merge(exposures, on=["trade_date", "ts_code"], how="left")
+    merged["industry"] = merged["industry"].fillna("Unknown")
+    merged["log_total_mv"] = pd.to_numeric(merged["log_total_mv"], errors="coerce")
+    frames = []
+    for (_factor, _trade_date), group in merged.groupby(["factor", "trade_date"], sort=True):
+        temp = group.copy()
+        y = pd.to_numeric(temp[score_col], errors="coerce")
+        valid_mask = y.notna()
+        temp["neutralized_score"] = pd.NA
+        if valid_mask.sum() < 3 or y[valid_mask].nunique() <= 1:
+            frames.append(temp)
+            continue
+        work = temp.loc[valid_mask].copy()
+        size = work["log_total_mv"].astype(float)
+        size = size.fillna(size.mean() if size.notna().any() else 0.0)
+        industry_dummies = pd.get_dummies(work["industry"].fillna("Unknown"), prefix="industry", drop_first=True, dtype=float)
+        x = pd.concat(
+            [
+                pd.Series(1.0, index=work.index, name="intercept"),
+                size.rename("log_total_mv"),
+                industry_dummies,
+            ],
+            axis=1,
+        )
+        beta, *_ = np.linalg.lstsq(x.to_numpy(dtype=float), y.loc[work.index].to_numpy(dtype=float), rcond=None)
+        residual = y.loc[work.index].to_numpy(dtype=float) - x.to_numpy(dtype=float).dot(beta)
+        temp.loc[work.index, "neutralized_score"] = residual
+        frames.append(temp)
+    return pd.concat(frames, ignore_index=True)
 
 
 def select_top_quantile_weights(
@@ -357,11 +399,11 @@ def compute_performance_metrics(
     return pd.DataFrame(rows).sort_values("annual_return", ascending=False).reset_index(drop=True)
 
 
-def factor_coverage(scores: pd.DataFrame, weights: pd.DataFrame) -> pd.DataFrame:
+def factor_coverage(scores: pd.DataFrame, weights: pd.DataFrame, score_col: str = "score") -> pd.DataFrame:
     if scores.empty:
         return pd.DataFrame()
     by_date = (
-        scores.assign(is_valid=scores["score"].notna())
+        scores.assign(is_valid=scores[score_col].notna())
         .groupby(["factor", "trade_date"], as_index=False)
         .agg(valid_count=("is_valid", "sum"))
     )
@@ -386,6 +428,36 @@ def factor_coverage(scores: pd.DataFrame, weights: pd.DataFrame) -> pd.DataFrame
     return coverage
 
 
+def compare_factor_metrics(raw_metrics: pd.DataFrame, neutralized_metrics: pd.DataFrame) -> pd.DataFrame:
+    if raw_metrics.empty and neutralized_metrics.empty:
+        return pd.DataFrame()
+    metric_cols = [
+        "annual_return",
+        "excess_annual_return",
+        "sharpe",
+        "max_drawdown",
+        "cumulative_return",
+        "average_monthly_turnover",
+    ]
+    raw = raw_metrics[["factor", *[col for col in metric_cols if col in raw_metrics.columns]]].copy()
+    neutralized = neutralized_metrics[["factor", *[col for col in metric_cols if col in neutralized_metrics.columns]]].copy()
+    merged = raw.merge(neutralized, on="factor", how="outer", suffixes=("_raw", "_neutralized"))
+    for col in metric_cols:
+        raw_col = f"{col}_raw"
+        neutralized_col = f"{col}_neutralized"
+        if raw_col in merged.columns and neutralized_col in merged.columns:
+            merged[f"{col}_delta"] = merged[neutralized_col] - merged[raw_col]
+    ordered = ["factor"]
+    for col in metric_cols:
+        ordered.extend(
+            value
+            for value in (f"{col}_raw", f"{col}_neutralized", f"{col}_delta")
+            if value in merged.columns
+        )
+    sort_col = "annual_return_delta" if "annual_return_delta" in merged.columns else "factor"
+    return merged[ordered].sort_values(sort_col, ascending=False, na_position="last").reset_index(drop=True)
+
+
 class FactorResearchRunner:
     def __init__(
         self,
@@ -397,6 +469,7 @@ class FactorResearchRunner:
         warmup_start: str = "2021-01-01",
         benchmark: str = "000985.CSI",
         transaction_cost: float = 0.001,
+        neutralized_subdir: str = "neutralized",
     ) -> None:
         self.project_root = Path(project_root)
         self.db_path = Path(db_path)
@@ -406,6 +479,10 @@ class FactorResearchRunner:
         self.warmup_start = yyyymmdd(warmup_start)
         self.benchmark = benchmark
         self.transaction_cost = transaction_cost
+        neutralized_path = Path(neutralized_subdir)
+        if not neutralized_subdir or neutralized_path.is_absolute() or ".." in neutralized_path.parts:
+            raise ValueError("neutralized_subdir must be a relative subdirectory under output_dir")
+        self.neutralized_subdir = neutralized_subdir
 
     def run(self) -> dict[str, Path]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -427,6 +504,7 @@ class FactorResearchRunner:
             returns = self._load_returns(con, self.start, end_date)
             suspensions = self._load_suspensions(con, self.start, end_date)
             benchmark_returns = self._load_benchmark(con, self.warmup_start, end_date)
+            exposures = self._load_exposures(con, signal_dates)
 
         portfolio_returns, turnover = backtest_monthly_top_quantile(
             weights,
@@ -441,6 +519,39 @@ class FactorResearchRunner:
         nav = self._build_nav_table(portfolio_returns, benchmark_returns)
         monthly_returns = self._build_monthly_returns(portfolio_returns)
 
+        neutralized_scores = neutralize_scores(scores, exposures)
+        tradable_neutralized_scores = filter_scores_for_execution_universe(
+            neutralized_scores,
+            rebalance_calendar,
+            execution_universe,
+        )
+        neutralized_weights = select_top_quantile_weights(
+            tradable_neutralized_scores,
+            quantile=0.2,
+            score_col="neutralized_score",
+        )
+        neutralized_portfolio_returns, neutralized_turnover = backtest_monthly_top_quantile(
+            neutralized_weights,
+            returns,
+            rebalance_calendar,
+            end_date=end_date,
+            transaction_cost=self.transaction_cost,
+            suspensions=suspensions,
+        )
+        neutralized_metrics = compute_performance_metrics(
+            neutralized_portfolio_returns,
+            benchmark_returns,
+            neutralized_turnover,
+        )
+        neutralized_coverage = factor_coverage(
+            neutralized_scores,
+            neutralized_weights,
+            score_col="neutralized_score",
+        )
+        neutralized_nav = self._build_nav_table(neutralized_portfolio_returns, benchmark_returns)
+        neutralized_monthly_returns = self._build_monthly_returns(neutralized_portfolio_returns)
+        metrics_comparison = compare_factor_metrics(metrics, neutralized_metrics)
+
         paths = self._write_outputs(
             metrics=metrics,
             coverage=coverage,
@@ -451,6 +562,20 @@ class FactorResearchRunner:
             turnover=turnover,
             benchmark_returns=benchmark_returns,
             end_date=end_date,
+        )
+        paths.update(
+            self._write_neutralized_outputs(
+                metrics=neutralized_metrics,
+                coverage=neutralized_coverage,
+                nav=neutralized_nav,
+                monthly_returns=neutralized_monthly_returns,
+                weights=neutralized_weights,
+                turnover=neutralized_turnover,
+                metrics_comparison=metrics_comparison,
+                raw_metrics=metrics,
+                benchmark_returns=benchmark_returns,
+                end_date=end_date,
+            )
         )
         return paths
 
@@ -490,6 +615,48 @@ class FactorResearchRunner:
               and u.is_st_name = false
             """
         ).fetchdf()
+
+    def _load_exposures(self, con: duckdb.DuckDBPyConnection, signal_dates: pd.Series) -> pd.DataFrame:
+        if signal_dates.empty:
+            return pd.DataFrame(columns=["trade_date", "ts_code", "total_mv", "log_total_mv", "industry"])
+        con.register("factor_signal_dates", pd.DataFrame({"trade_date": signal_dates}))
+        daily_basic = self._silver_path("daily_basic")
+        size = con.execute(
+            f"""
+            select
+                db.trade_date,
+                db.ts_code,
+                db.total_mv,
+                case when db.total_mv > 0 then ln(db.total_mv) else null end as log_total_mv
+            from read_parquet('{daily_basic}') db
+            join factor_signal_dates s using (trade_date)
+            """
+        ).fetchdf()
+        industry = con.execute(
+            """
+            with candidates as (
+                select
+                    s.trade_date,
+                    i.ts_code,
+                    i.l1_name as industry,
+                    row_number() over (
+                        partition by s.trade_date, i.ts_code
+                        order by i.in_date desc
+                    ) as rn
+                from factor_signal_dates s
+                join v_industry_data i
+                  on i.ts_code is not null
+                 and cast(i.in_date as varchar) <= s.trade_date
+                 and (i.out_date is null or s.trade_date < cast(i.out_date as varchar))
+            )
+            select trade_date, ts_code, industry
+            from candidates
+            where rn = 1
+            """
+        ).fetchdf()
+        exposures = size.merge(industry, on=["trade_date", "ts_code"], how="left")
+        exposures["industry"] = exposures["industry"].fillna("Unknown")
+        return exposures
 
     def _load_factor_panel(self, con: duckdb.DuckDBPyConnection, signal_dates: pd.Series, end_date: str) -> pd.DataFrame:
         if signal_dates.empty:
@@ -847,6 +1014,65 @@ class FactorResearchRunner:
         self._write_report(paths["report"], metrics, coverage, end_date, benchmark_returns)
         return paths
 
+    def _write_neutralized_outputs(
+        self,
+        metrics: pd.DataFrame,
+        coverage: pd.DataFrame,
+        nav: pd.DataFrame,
+        monthly_returns: pd.DataFrame,
+        weights: pd.DataFrame,
+        turnover: pd.DataFrame,
+        metrics_comparison: pd.DataFrame,
+        raw_metrics: pd.DataFrame,
+        benchmark_returns: pd.DataFrame,
+        end_date: str,
+    ) -> dict[str, Path]:
+        base = self.output_dir / self.neutralized_subdir
+        tables = base / "tables"
+        images = base / "images"
+        tables.mkdir(parents=True, exist_ok=True)
+        images.mkdir(parents=True, exist_ok=True)
+        paths = {
+            "neutralized_metrics": tables / "factor_metrics.csv",
+            "neutralized_coverage": tables / "factor_coverage.csv",
+            "neutralized_nav": tables / "nav_by_factor.csv",
+            "neutralized_monthly_returns": tables / "monthly_returns.csv",
+            "neutralized_turnover": tables / "turnover.csv",
+            "neutralized_weights": tables / "rebalance_weights.csv",
+            "neutralized_metrics_comparison": tables / "factor_metrics_comparison.csv",
+            "neutralized_report": base / "report.md",
+        }
+        metrics.to_csv(paths["neutralized_metrics"], index=False, encoding="utf-8-sig")
+        coverage.to_csv(paths["neutralized_coverage"], index=False, encoding="utf-8-sig")
+        nav.to_csv(paths["neutralized_nav"], index=False, encoding="utf-8-sig")
+        monthly_returns.to_csv(paths["neutralized_monthly_returns"], index=False, encoding="utf-8-sig")
+        turnover.to_csv(paths["neutralized_turnover"], index=False, encoding="utf-8-sig")
+        weights.to_csv(paths["neutralized_weights"], index=False, encoding="utf-8-sig")
+        metrics_comparison.to_csv(paths["neutralized_metrics_comparison"], index=False, encoding="utf-8-sig")
+
+        chart_paths = {
+            f"neutralized_{key}": path
+            for key, path in self._write_images(metrics, coverage, nav, images).items()
+        }
+        chart_paths.update(
+            {
+                f"neutralized_{key}": path
+                for key, path in self._write_comparison_images(metrics_comparison, images).items()
+            }
+        )
+        paths.update(chart_paths)
+        self._write_neutralized_report(
+            paths["neutralized_report"],
+            metrics=metrics,
+            coverage=coverage,
+            metrics_comparison=metrics_comparison,
+            raw_metrics=raw_metrics,
+            end_date=end_date,
+            benchmark_returns=benchmark_returns,
+            image_paths=chart_paths,
+        )
+        return paths
+
     def _write_images(self, metrics: pd.DataFrame, coverage: pd.DataFrame, nav: pd.DataFrame, images: Path) -> dict[str, Path]:
         try:
             import matplotlib.pyplot as plt
@@ -960,6 +1186,67 @@ class FactorResearchRunner:
             )
             self._save_table_image(table, coverage_path, "Factor Coverage")
             paths["coverage_image"] = coverage_path
+        return paths
+
+    def _write_comparison_images(self, metrics_comparison: pd.DataFrame, images: Path) -> dict[str, Path]:
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib.ticker import PercentFormatter
+        except ImportError:
+            return {}
+        paths: dict[str, Path] = {}
+        if metrics_comparison.empty:
+            return paths
+
+        table_path = images / "metrics_comparison_table.png"
+        cols = [
+            "factor",
+            "annual_return_raw",
+            "annual_return_neutralized",
+            "annual_return_delta",
+            "excess_annual_return_delta",
+            "sharpe_delta",
+            "max_drawdown_delta",
+        ]
+        table = metrics_comparison[[col for col in cols if col in metrics_comparison.columns]].copy()
+        table["factor"] = table["factor"].map(lambda value: FACTOR_DISPLAY_NAMES.get(value, value))
+        for col in table.columns:
+            if col == "factor":
+                continue
+            table[col] = table[col].map(lambda x: "" if pd.isna(x) else f"{x:.2f}" if "sharpe" in col else f"{x:.2%}")
+        table = table.rename(
+            columns={
+                "factor": "Factor",
+                "annual_return_raw": "Raw Ann.",
+                "annual_return_neutralized": "Neutral Ann.",
+                "annual_return_delta": "Delta Ann.",
+                "excess_annual_return_delta": "Delta Excess",
+                "sharpe_delta": "Delta Sharpe",
+                "max_drawdown_delta": "Delta Max DD",
+            }
+        )
+        self._save_table_image(table, table_path, "Raw vs Neutralized Metrics")
+        paths["metrics_comparison_image"] = table_path
+
+        required = {"factor", "annual_return_raw", "annual_return_neutralized"}
+        if required <= set(metrics_comparison.columns):
+            annual_path = images / "raw_vs_neutralized_annual_return.png"
+            plot_frame = metrics_comparison.sort_values("annual_return_neutralized", ascending=True)
+            y = np.arange(len(plot_frame))
+            height = max(4.5, len(plot_frame) * 0.42)
+            fig, ax = plt.subplots(figsize=(10.5, height))
+            ax.barh(y - 0.18, plot_frame["annual_return_raw"], height=0.36, label="Raw", color="#4c78a8")
+            ax.barh(y + 0.18, plot_frame["annual_return_neutralized"], height=0.36, label="Neutralized", color="#f58518")
+            ax.axvline(0, color="#333333", linewidth=0.8)
+            ax.set_yticks(y, [FACTOR_DISPLAY_NAMES.get(value, value) for value in plot_frame["factor"]])
+            ax.set_xlabel("Annual Return")
+            ax.set_title("Raw vs Neutralized Annual Return")
+            ax.xaxis.set_major_formatter(PercentFormatter(1.0))
+            ax.legend(frameon=False)
+            fig.tight_layout()
+            fig.savefig(annual_path, dpi=170)
+            plt.close(fig)
+            paths["annual_return_comparison_image"] = annual_path
         return paths
 
     def _plot_colors(self, factors: Iterable[str]) -> dict[str, object]:
@@ -1080,6 +1367,85 @@ class FactorResearchRunner:
         path.write_text(content, encoding="utf-8")
 
 
+    def _write_neutralized_report(
+        self,
+        path: Path,
+        metrics: pd.DataFrame,
+        coverage: pd.DataFrame,
+        metrics_comparison: pd.DataFrame,
+        raw_metrics: pd.DataFrame,
+        end_date: str,
+        benchmark_returns: pd.DataFrame,
+        image_paths: dict[str, Path],
+    ) -> None:
+        benchmark_count = int(benchmark_returns["benchmark_return"].notna().sum()) if not benchmark_returns.empty else 0
+        metric_table = _format_report_numbers(
+            metrics.head(11),
+            ["factor", "annual_return", "annual_volatility", "max_drawdown", "sharpe", "excess_annual_return"],
+        )
+        comparison_table = _format_report_numbers(
+            metrics_comparison.head(11),
+            [
+                "factor",
+                "annual_return_raw",
+                "annual_return_neutralized",
+                "annual_return_delta",
+                "excess_annual_return_delta",
+                "sharpe_delta",
+                "max_drawdown_delta",
+            ],
+        )
+        coverage_table = _format_report_numbers(
+            coverage,
+            ["factor", "signal_count", "first_signal", "last_signal", "valid_rows", "average_holding_count"],
+        )
+        raw_top = raw_metrics.iloc[0]["factor"] if not raw_metrics.empty else ""
+        neutralized_top = metrics.iloc[0]["factor"] if not metrics.empty else ""
+        image_lines = "\n".join(f"- `{path_value.relative_to(path.parent).as_posix()}`" for path_value in image_paths.values())
+        content = f"""# Industry and Size Neutralized Top20% Backtest Report
+
+## Sample and Method
+
+- Data source: read-only `data/share_quant.duckdb`, existing research views, and silver parquet.
+- Output directory: `{path.parent.as_posix()}/`.
+- Evaluation window: `{self.start}` to `{end_date}`; warmup starts at `{self.warmup_start}`.
+- Signal and execution: month-end close signal, next trading day close execution, held until the next rebalance.
+- Universe: listed, not suspended, and non-ST stocks at the execution date.
+- Benchmark: `{self.benchmark}`, valid benchmark return days `{benchmark_count}`.
+- Transaction cost: one-way `{self.transaction_cost:.2%}`, deducted by rebalance turnover.
+- Neutralization: after the existing winsorization and z-score step, regress `score` on `log(total_mv)` and current first-level industry dummies within each `factor + trade_date`; use only the residual `neutralized_score` for Top20% selection.
+- Missing exposures: missing industry is `Unknown`; missing `log(total_mv)` is filled by the same cross-section mean, or 0 if the cross-section has no valid size.
+
+## Neutralized Metrics
+
+{_markdown_table(metric_table)}
+
+## Raw vs Neutralized Comparison
+
+{_markdown_table(comparison_table)}
+
+## Coverage
+
+{_markdown_table(coverage_table)}
+
+## Quick Read
+
+- Best raw annual return factor in the paired run: `{raw_top}`.
+- Best neutralized annual return factor: `{neutralized_top}`.
+- Raw and neutralized runs use the same sample window, universe filter, rebalance calendar, transaction cost, and benchmark.
+
+## Output Files
+
+- Tables: `tables/factor_metrics.csv`, `tables/factor_coverage.csv`, `tables/nav_by_factor.csv`, `tables/monthly_returns.csv`, `tables/turnover.csv`, `tables/rebalance_weights.csv`, `tables/factor_metrics_comparison.csv`
+- Images: `images/nav_curve.png`, `images/drawdown.png`, `images/metrics_table.png`, `images/metrics_comparison_table.png`, `images/raw_vs_neutralized_annual_return.png`
+
+## Images
+
+{image_lines}
+"""
+        path.write_text(content, encoding="utf-8")
+
+
 def _markdown_table(frame: pd.DataFrame) -> str:
     if frame.empty:
         return ""
@@ -1091,6 +1457,28 @@ def _markdown_table(frame: pd.DataFrame) -> str:
     for row in frame.astype(str).itertuples(index=False):
         lines.append("| " + " | ".join(str(value).replace("|", "\\|") for value in row) + " |")
     return "\n".join(lines)
+
+
+def _format_report_numbers(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    selected = frame[[col for col in columns if col in frame.columns]].copy()
+    if "factor" in selected.columns:
+        selected["factor"] = selected["factor"].map(lambda value: FACTOR_DISPLAY_NAMES.get(value, value))
+    for col in selected.columns:
+        if col == "factor":
+            continue
+        if col in {"signal_count", "valid_rows"}:
+            selected[col] = selected[col].map(lambda x: "" if pd.isna(x) else f"{x:.0f}")
+        elif col in {"first_signal", "last_signal"}:
+            selected[col] = selected[col].map(_format_yyyymmdd)
+        elif "sharpe" in col:
+            selected[col] = selected[col].map(lambda x: "" if pd.isna(x) else f"{x:.2f}")
+        elif "count" in col:
+            selected[col] = selected[col].map(lambda x: "" if pd.isna(x) else f"{x:.0f}")
+        else:
+            selected[col] = selected[col].map(lambda x: "" if pd.isna(x) else f"{x:.2%}")
+    return selected
 
 
 def _format_yyyymmdd(value: object) -> str:
