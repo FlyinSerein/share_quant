@@ -1,0 +1,160 @@
+{
+  "artifact_id": "group_balanced11_extended_validation_v1",
+  "generated_at_utc": "2026-07-23T04:39:23.355969+00:00",
+  "database_path": "D:\\share_quant\\database\\data\\share_quant.duckdb",
+  "database_open_mode": "read_only",
+  "data_end_date": "20260720",
+  "evaluation_start": "20160201",
+  "warmup_start": "20150101",
+  "signal_start": "20160101",
+  "strategies": [
+    "Full11_Equal",
+    "GroupBalanced11_v1",
+    "Fixed4_Equal"
+  ],
+  "factor_config": "D:\\share_quant\\factor_research\\configs\\walk_forward_champion.yaml",
+  "factor_config_sha256": "f808a19a93b5864e046efe91789c7e02d75f9aac6bfbd429ca6cc88bb1e03715",
+  "marginal_config": "D:\\share_quant\\factor_research\\configs\\factor_marginal_analysis.yaml",
+  "marginal_config_sha256": "1753b58c5000d62020e1bd28e9b62a1f24a2775ee08ca7b7c04b985e9d994e04",
+  "script": "D:\\share_quant\\factor_research\\scripts\\run_group_balanced11_extended_validation.py",
+  "script_sha256": "030121c00246465b81addb21871213626c9e35170a12e8fcb56b744ec8f1c1de",
+  "bootstrap_seed": 20260722,
+  "bootstrap_repetitions": 10000,
+  "bootstrap_block_months": 6,
+  "deterministic_execution": {
+    "duckdb_threads": 1,
+    "omp_threads": 1,
+    "openblas_threads": 1,
+    "mkl_threads": 1,
+    "numexpr_threads": 1
+  },
+  "decision": {
+    "label": "不优于基准",
+    "evaluation_period": {
+      "start": "20160201",
+      "end": "20260720"
+    },
+    "complete_years": [
+      2017,
+      2018,
+      2019,
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "required_winning_years": 6,
+    "winning_years": {
+      "d10_d1": 1,
+      "top20_excess": 2
+    },
+    "full_period_return_gates": {
+      "d10_d1": false,
+      "top20_excess": false
+    },
+    "annual_stability_gates": {
+      "d10_d1": false,
+      "top20_excess": false
+    },
+    "bootstrap_significance_gates": {
+      "d10_d1": false,
+      "top20_excess": false
+    },
+    "drawdown_gates": {
+      "d10_d1": false,
+      "top20": false
+    },
+    "turnover_gates": {
+      "d10_d1": false,
+      "top20": false
+    },
+    "critical_quality_failures": []
+  },
+  "reference_reproduction_passed": false,
+  "protected_file_audit_passed": true,
+  "protected_file_count": 28432,
+  "git_status_before_run": [
+    " M database/AGENTS.md",
+    " M database/README.md",
+    " M database/configs/default.yaml",
+    " M database/src/share_quant/cli.py",
+    " M database/src/share_quant/config.py",
+    " M database/src/share_quant/datasets.py",
+    " M database/src/share_quant/phased_sync.py",
+    " M database/src/share_quant/storage.py",
+    " M database/src/share_quant/sync.py",
+    " M database/tests/test_cli.py",
+    " M database/tests/test_phased_sync.py",
+    " M database/tests/test_storage.py",
+    " M database/tests/test_sync.py",
+    "?? database/src/share_quant/security_codes.py",
+    "?? factor_research/configs/factor_marginal_analysis.yaml",
+    "?? factor_research/configs/walk_forward_champion.yaml",
+    "?? factor_research/factor_pool_experiment_summary.md",
+    "?? factor_research/outputs/factor_marginal_analysis/",
+    "?? factor_research/outputs/group_balanced11_extended_validation/",
+    "?? factor_research/outputs/walk_forward_champion/",
+    "?? factor_research/outputs/walk_forward_champion_monthly/",
+    "?? factor_research/scripts/generate_factor_marginal_report.py",
+    "?? factor_research/scripts/run_factor_marginal_analysis.py",
+    "?? factor_research/scripts/run_group_balanced11_extended_validation.py",
+    "?? factor_research/scripts/run_walk_forward_champion.py",
+    "?? factor_research/src/factor_research/factor_marginal_analysis.py",
+    "?? factor_research/src/factor_research/walk_forward_champion.py",
+    "?? factor_research/tests/test_factor_marginal_analysis.py",
+    "?? factor_research/tests/test_walk_forward_champion.py"
+  ],
+  "git_status_after_run": [
+    " M database/AGENTS.md",
+    " M database/README.md",
+    " M database/configs/default.yaml",
+    " M database/src/share_quant/cli.py",
+    " M database/src/share_quant/config.py",
+    " M database/src/share_quant/datasets.py",
+    " M database/src/share_quant/phased_sync.py",
+    " M database/src/share_quant/storage.py",
+    " M database/src/share_quant/sync.py",
+    " M database/tests/test_cli.py",
+    " M database/tests/test_phased_sync.py",
+    " M database/tests/test_storage.py",
+    " M database/tests/test_sync.py",
+    "?? database/src/share_quant/security_codes.py",
+    "?? factor_research/configs/factor_marginal_analysis.yaml",
+    "?? factor_research/configs/walk_forward_champion.yaml",
+    "?? factor_research/factor_pool_experiment_summary.md",
+    "?? factor_research/outputs/factor_marginal_analysis/",
+    "?? factor_research/outputs/group_balanced11_extended_validation/",
+    "?? factor_research/outputs/walk_forward_champion/",
+    "?? factor_research/outputs/walk_forward_champion_monthly/",
+    "?? factor_research/scripts/generate_factor_marginal_report.py",
+    "?? factor_research/scripts/run_factor_marginal_analysis.py",
+    "?? factor_research/scripts/run_group_balanced11_extended_validation.py",
+    "?? factor_research/scripts/run_walk_forward_champion.py",
+    "?? factor_research/src/factor_research/factor_marginal_analysis.py",
+    "?? factor_research/src/factor_research/walk_forward_champion.py",
+    "?? factor_research/tests/test_factor_marginal_analysis.py",
+    "?? factor_research/tests/test_walk_forward_champion.py"
+  ],
+  "outputs": {
+    "analysis_report_docx": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\group_balanced11_extended_validation_report.docx",
+    "analysis_report_markdown": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\analysis_report.md",
+    "analysis_report_pdf": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\group_balanced11_extended_validation_report.pdf",
+    "annual_advantage": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\images\\annual_advantage.png",
+    "annual_stability": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\annual_stability.csv",
+    "coverage": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\images\\coverage.png",
+    "coverage_diagnostics": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\coverage_diagnostics.csv",
+    "cumulative_performance": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\images\\cumulative_performance.png",
+    "data_quality_gate": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\data_quality_gate.csv",
+    "decision_summary": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\decision_summary.json",
+    "factor_group_definition": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\factor_group_definition.csv",
+    "monthly_paired_advantage": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\images\\monthly_paired_advantage.png",
+    "monthly_strategy_metrics": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\monthly_strategy_metrics.csv",
+    "protected_file_audit": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\protected_file_audit.csv",
+    "reference_reproduction": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\reference_reproduction.csv",
+    "risk_and_turnover": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\images\\risk_and_turnover.png",
+    "statistical_tests": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\statistical_tests.csv",
+    "strategy_period_metrics": "D:\\share_quant\\factor_research\\outputs\\group_balanced11_extended_validation\\strategy_period_metrics.csv"
+  }
+}

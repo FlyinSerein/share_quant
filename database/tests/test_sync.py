@@ -159,6 +159,44 @@ class SyncEngineTest(unittest.TestCase):
             self.assertNotIn("start_date", adapter.calls[0][1])
             self.assertNotIn("end_date", adapter.calls[0][1])
 
+    def test_paged_range_strategy_preserves_dates_across_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageEngine(root / "data", root / "data" / "share_quant.duckdb")
+            storage.init()
+            full_page = pd.DataFrame(
+                [
+                    {
+                        "ts_code": f"0{i:05d}.SZ",
+                        "ann_date": "20210430",
+                        "end_date": "20210331",
+                        "holder_name": "fixture",
+                    }
+                    for i in range(3000)
+                ]
+            )
+            last_page = pd.DataFrame(
+                [
+                    {
+                        "ts_code": "600000.SH",
+                        "ann_date": "20210430",
+                        "end_date": "20210331",
+                        "holder_name": "fixture",
+                    }
+                ]
+            )
+            adapter = PagedFakeAdapter([full_page, last_page])
+            engine = SyncEngine(adapter, storage, write_silver=False)
+
+            result = engine.sync_dataset("top10_holders", "2021-01-01", "2021-03-31")
+
+            self.assertEqual(result.rows_fetched, 3001)
+            self.assertEqual(adapter.calls[0][1]["start_date"], "20210101")
+            self.assertEqual(adapter.calls[0][1]["end_date"], "20210331")
+            self.assertEqual(adapter.calls[0][1]["limit"], 3000)
+            self.assertEqual(adapter.calls[0][1]["offset"], 0)
+            self.assertEqual(adapter.calls[1][1]["offset"], 3000)
+
     def test_param_sets_strategy_merges_static_calls_without_dates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

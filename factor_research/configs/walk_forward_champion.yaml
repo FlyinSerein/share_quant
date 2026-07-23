@@ -1,0 +1,49 @@
+schema_version: 1
+artifact_id: stage1_accepted_baselines_v1
+locked_at: "2026-07-15"
+source: factor_pool_experiment_summary.md
+
+defaults:
+  start: "2022-01-01"
+  end: null
+  warmup_start: "2021-01-01"
+  benchmark: "000985.CSI"
+  transaction_cost: 0.001
+  train_periods: 24
+  validation_periods: 12
+  oos_periods: 6
+  step_periods: 6
+  min_train_rankic_periods: 18
+  min_validation_return_periods: 9
+  champion_switch_sharpe_margin: 0.10
+  top_quantile: 0.20
+  bucket_count: 10
+
+factor_pool:
+  - {id: ROE, direction: 1}
+  - {id: PE_TTM, direction: -1}
+  - {id: Revenue_Growth, direction: 1}
+  - {id: Momentum_60D, direction: 1}
+  - {id: Turnover_20D, direction: 1}
+  - {id: Debt_to_Equity, direction: -1}
+  - {id: Volatility, direction: -1}
+  - {id: Main_Net_In, direction: 1}
+  - {id: Dividend_Yield, direction: 1}
+  - {id: Holder_Concen, direction: 1}
+  - {id: Gross_Margin, direction: 1}
+
+multifactor_candidates:
+  - id: Composite_Equal
+    method: equal
+    factor_ids: all
+    parameters:
+      min_factor_count: 6
+  - id: Composite_RollingRankIC
+    method: rolling_rankic
+    factor_ids: all
+    parameters:
+      rankic_window: 12
+      rankic_min_periods: 6
+      negative_rankic: clip_zero
+      fallback: equal
+      min_factor_count: 6

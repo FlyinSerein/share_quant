@@ -1,0 +1,32 @@
+{
+  "run_id": "wf_cd46c725e308",
+  "generated_at_utc": "2026-07-15T09:52:20.695043+00:00",
+  "code_revision": "b0a63b8aec118e2cf789182248d5dccadbb5fae2",
+  "data_end_date": "20260707",
+  "database_path": "D:\\share_quant\\database\\data\\share_quant.duckdb",
+  "database_open_mode": "read_only",
+  "stage1_artifact": {
+    "path": "D:\\share_quant\\factor_research\\configs\\walk_forward_champion.yaml",
+    "schema_version": 1,
+    "artifact_id": "stage1_accepted_baselines_v1",
+    "locked_at": "2026-07-15",
+    "source": "factor_pool_experiment_summary.md",
+    "sha256": "f808a19a93b5864e046efe91789c7e02d75f9aac6bfbd429ca6cc88bb1e03715"
+  },
+  "parameters": {
+    "start": "2022-01-01",
+    "end": null,
+    "warmup_start": "2021-01-01",
+    "benchmark": "000985.CSI",
+    "transaction_cost": 0.001,
+    "train_periods": 24,
+    "validation_periods": 12,
+    "oos_periods": 1,
+    "step_periods": 1,
+    "min_train_rankic_periods": 18,
+    "min_validation_return_periods": 9,
+    "champion_switch_sharpe_margin": 0.1,
+    "top_quantile": 0.2,
+    "bucket_count": 10
+  }
+}

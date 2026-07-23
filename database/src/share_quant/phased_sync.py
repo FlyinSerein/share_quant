@@ -7,7 +7,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from .datasets import DatasetSpec, dataset_names_for_group, get_dataset
+from .datasets import (
+    TRADING_DAY_DATASETS,
+    DatasetSpec,
+    dataset_names_for_group,
+    get_dataset,
+)
 from .storage import StorageEngine
 from .sync import SyncEngine
 from .utils import iso_now
@@ -62,56 +67,76 @@ class PhasedSyncRunner:
         pause_between_chunks: float = 0.0,
         dry_run: bool = False,
         create_views_on_finish: bool = True,
+        checkpoint_every: int = 1,
     ) -> PhasedSyncSummary:
+        if checkpoint_every < 1:
+            raise ValueError("checkpoint_every must be greater than 0")
         checkpoint = self._load_checkpoint() if resume else {"completed_chunks": {}}
         completed = checkpoint.setdefault("completed_chunks", {})
-        chunks = list(plan_chunks(groups, enabled, start, end))
+        open_trade_dates = self.storage.open_trade_dates(start, end)
+        chunks = list(
+            plan_chunks(
+                groups,
+                enabled,
+                start,
+                end,
+                open_trade_dates=open_trade_dates,
+            )
+        )
         summary = PhasedSyncSummary(planned=len(chunks))
         self._emit("run_start", None, planned=summary.planned, groups=groups, start=start, end=end, dry_run=dry_run)
+        unsaved_completions = 0
 
-        for index, chunk in enumerate(chunks, start=1):
-            if resume and chunk.key in completed:
-                summary.skipped += 1
-                self._emit("skip_completed", chunk, index=index, total=summary.planned)
-                continue
+        try:
+            for index, chunk in enumerate(chunks, start=1):
+                if resume and chunk.key in completed:
+                    summary.skipped += 1
+                    self._emit("skip_completed", chunk, index=index, total=summary.planned)
+                    continue
 
-            if dry_run:
-                self._emit("dry_run", chunk, index=index, total=summary.planned)
-                continue
+                if dry_run:
+                    self._emit("dry_run", chunk, index=index, total=summary.planned)
+                    continue
 
-            self._emit("chunk_start", chunk, index=index, total=summary.planned)
-            try:
-                result = self.engine.sync_dataset(chunk.dataset, chunk.start, chunk.end)
-            except Exception as exc:
-                summary.failed += 1
-                self._emit("chunk_failed", chunk, index=index, total=summary.planned, error=str(exc))
-                if not skip_failures:
-                    raise
-            else:
-                summary.succeeded += 1
-                completed[chunk.key] = {
-                    "dataset": chunk.dataset,
-                    "group": chunk.group,
-                    "start": chunk.start,
-                    "end": chunk.end,
-                    "batch_id": result.batch_id,
-                    "rows_fetched": result.rows_fetched,
-                    "rows_stored": result.rows_stored,
-                    "completed_at": iso_now(),
-                }
+                self._emit("chunk_start", chunk, index=index, total=summary.planned)
+                try:
+                    result = self.engine.sync_dataset(chunk.dataset, chunk.start, chunk.end)
+                except Exception as exc:
+                    summary.failed += 1
+                    self._emit("chunk_failed", chunk, index=index, total=summary.planned, error=str(exc))
+                    if not skip_failures:
+                        raise
+                else:
+                    summary.succeeded += 1
+                    completed[chunk.key] = {
+                        "dataset": chunk.dataset,
+                        "group": chunk.group,
+                        "start": chunk.start,
+                        "end": chunk.end,
+                        "batch_id": result.batch_id,
+                        "rows_fetched": result.rows_fetched,
+                        "rows_stored": result.rows_stored,
+                        "completed_at": iso_now(),
+                    }
+                    unsaved_completions += 1
+                    if unsaved_completions >= checkpoint_every:
+                        self._save_checkpoint(checkpoint)
+                        unsaved_completions = 0
+                    self._emit(
+                        "chunk_success",
+                        chunk,
+                        index=index,
+                        total=summary.planned,
+                        batch_id=result.batch_id,
+                        rows_fetched=result.rows_fetched,
+                        rows_stored=result.rows_stored,
+                    )
+
+                if pause_between_chunks > 0:
+                    time.sleep(pause_between_chunks)
+        finally:
+            if unsaved_completions:
                 self._save_checkpoint(checkpoint)
-                self._emit(
-                    "chunk_success",
-                    chunk,
-                    index=index,
-                    total=summary.planned,
-                    batch_id=result.batch_id,
-                    rows_fetched=result.rows_fetched,
-                    rows_stored=result.rows_stored,
-                )
-
-            if pause_between_chunks > 0:
-                time.sleep(pause_between_chunks)
 
         if not dry_run and create_views_on_finish:
             self.storage.create_views()
@@ -143,7 +168,13 @@ class PhasedSyncRunner:
         self.logger(_format_progress(payload))
 
 
-def plan_chunks(groups: list[str], enabled: dict[str, bool], start: str, end: str) -> list[SyncChunk]:
+def plan_chunks(
+    groups: list[str],
+    enabled: dict[str, bool],
+    start: str,
+    end: str,
+    open_trade_dates: set[str] | None = None,
+) -> list[SyncChunk]:
     chunks: list[SyncChunk] = []
     seen: set[str] = set()
     for group in groups:
@@ -152,7 +183,14 @@ def plan_chunks(groups: list[str], enabled: dict[str, bool], start: str, end: st
                 continue
             seen.add(dataset)
             spec = get_dataset(dataset)
-            chunks.extend(_chunks_for_spec(spec, start, end))
+            dataset_chunks = _chunks_for_spec(spec, start, end)
+            if open_trade_dates is not None and dataset in TRADING_DAY_DATASETS:
+                dataset_chunks = [
+                    chunk
+                    for chunk in dataset_chunks
+                    if chunk.start == chunk.end and chunk.start in open_trade_dates
+                ]
+            chunks.extend(dataset_chunks)
     return chunks
 
 

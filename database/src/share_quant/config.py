@@ -11,6 +11,9 @@ except ImportError:  # pragma: no cover - dependency is declared for normal use.
     yaml = None
 
 
+DEFAULT_START_DATE = "2015-01-01"
+
+
 @dataclass(frozen=True)
 class TushareConfig:
     token_env: str = "TUSHARE_TOKEN"
@@ -59,7 +62,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     return AppConfig(
         data_root=data_root,
         duckdb_path=duckdb_path,
-        default_start_date=str(raw.get("default_start_date", "2021-01-01")),
+        default_start_date=str(raw.get("default_start_date", DEFAULT_START_DATE)),
         default_end_date=str(raw.get("default_end_date", "today")),
         tushare=TushareConfig(
             token_env=str(ts_raw.get("token_env", "TUSHARE_TOKEN")),
@@ -74,4 +77,3 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 def _resolve_path(root: Path, value: str | Path) -> Path:
     path = Path(value)
     return path if path.is_absolute() else root / path
-

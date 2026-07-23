@@ -1,0 +1,12 @@
+﻿factor,direction,original_category,group_id,group_name_zh,group_factor_count,within_group_weight_full_data,between_group_weight_full_data,effective_factor_weight_full_data,fixed_pool_member
+PE_TTM,-1,估值指标,Value,价值,2,0.5,0.125,0.0625,True
+Dividend_Yield,1,分红能力,Value,价值,2,0.5,0.125,0.0625,True
+ROE,1,财务质量,Quality,质量,3,0.3333333333333333,0.125,0.041666666666666664,False
+Debt_to_Equity,-1,质量指标,Quality,质量,3,0.3333333333333333,0.125,0.041666666666666664,False
+Gross_Margin,1,盈利能力,Quality,质量,3,0.3333333333333333,0.125,0.041666666666666664,False
+Revenue_Growth,1,成长能力,Growth,成长,1,1.0,0.125,0.125,False
+Volatility,-1,波动率,LowVol,低波,1,1.0,0.125,0.125,True
+Momentum_60D,1,技术动量,Momentum,动量,1,1.0,0.125,0.125,False
+Main_Net_In,1,资金流向,FundFlow,资金流,1,1.0,0.125,0.125,True
+Turnover_20D,1,流动性,Liquidity,流动性,1,1.0,0.125,0.125,False
+Holder_Concen,1,市场情绪,Ownership,股东结构,1,1.0,0.125,0.125,False

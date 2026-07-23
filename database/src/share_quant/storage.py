@@ -9,7 +9,13 @@ import duckdb
 import pandas as pd
 
 from .datasets import DATASETS, DatasetSpec
-from .utils import iso_now
+from .security_codes import (
+    SECURITY_ALIAS_RANK_COLUMN,
+    SECURITY_CODE_ALIASES,
+    canonicalize_security_codes,
+    security_code_columns,
+)
+from .utils import compact_date, iso_now
 
 
 RESEARCH_VIEWS = (
@@ -125,8 +131,13 @@ class StorageEngine:
         return path
 
     def upsert_silver(self, spec: DatasetSpec, frame: pd.DataFrame, batch_id: str) -> int:
-        self._assert_primary_key(frame, spec)
-        incoming = frame.copy()
+        incoming = canonicalize_security_codes(
+            frame,
+            spec.name,
+            track_alias_source=True,
+        )
+        self._assert_primary_key(incoming, spec)
+        incoming = incoming.copy()
         incoming["_batch_id"] = batch_id
         incoming["_ingested_at"] = iso_now()
 
@@ -144,16 +155,24 @@ class StorageEngine:
                 union_sql = "select * from incoming"
 
             pk_expr = ", ".join(_quote(col) for col in spec.primary_key)
+            rank_column = (
+                f", coalesce({_quote(SECURITY_ALIAS_RANK_COLUMN)}, 0) asc"
+                if SECURITY_ALIAS_RANK_COLUMN in incoming.columns
+                else ""
+            )
+            excluded_columns = ["_rn"]
+            if SECURITY_ALIAS_RANK_COLUMN in incoming.columns:
+                excluded_columns.append(SECURITY_ALIAS_RANK_COLUMN)
             con.execute(
                 f"""
                 create or replace temp table deduped as
-                select * exclude (_rn)
+                select * exclude ({", ".join(excluded_columns)})
                 from (
                     select
                         *,
                         row_number() over (
                             partition by {pk_expr}
-                            order by _ingested_at desc, _batch_id desc
+                            order by _ingested_at desc, _batch_id desc{rank_column}
                         ) as _rn
                     from ({union_sql})
                 )
@@ -163,6 +182,153 @@ class StorageEngine:
             con.execute("copy deduped to ? (format parquet)", [str(path)])
             row_count = con.execute("select count(*) from deduped").fetchone()[0]
         return int(row_count)
+
+    def consolidate_bronze(self, spec: DatasetSpec) -> int | None:
+        bronze_dir = self.data_root / "bronze" / spec.name
+        if not bronze_dir.exists() or not any(bronze_dir.glob("*.parquet")):
+            return None
+
+        silver_path = self.silver_path(spec.name)
+        silver_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = silver_path.with_name(f".{silver_path.stem}-{uuid.uuid4().hex}.tmp.parquet")
+        bronze_glob = _sql_path(bronze_dir / "*.parquet")
+
+        with self.connect() as con:
+            bronze_columns = {
+                row[0]
+                for row in con.execute(
+                    f"describe select * from read_parquet('{bronze_glob}', union_by_name = true)"
+                ).fetchall()
+            }
+            sources = [
+                self._canonicalized_read_sql(
+                    spec,
+                    f"read_parquet('{bronze_glob}', union_by_name = true)",
+                    bronze_columns,
+                )
+            ]
+            if silver_path.exists():
+                silver_columns = self._silver_columns(con, spec.name)
+                sources.insert(
+                    0,
+                    self._canonicalized_read_sql(
+                        spec,
+                        f"read_parquet('{_sql_path(silver_path)}')",
+                        silver_columns,
+                    ),
+                )
+            union_sql = " union all by name ".join(sources)
+            pk_expr = ", ".join(_quote(col) for col in spec.primary_key)
+            has_rank = bool(
+                security_code_columns(
+                    spec.name,
+                    bronze_columns | (silver_columns if silver_path.exists() else set()),
+                )
+            )
+            rank_column = (
+                f", coalesce({_quote(SECURITY_ALIAS_RANK_COLUMN)}, 0) asc"
+                if has_rank
+                else ""
+            )
+            excluded_columns = ["_rn", "_api_name", "_params_json"]
+            if has_rank:
+                excluded_columns.append(SECURITY_ALIAS_RANK_COLUMN)
+            con.execute(
+                f"""
+                create or replace temp table consolidated as
+                select * exclude ({", ".join(excluded_columns)})
+                from (
+                    select
+                        *,
+                        row_number() over (
+                            partition by {pk_expr}
+                            order by _ingested_at desc, _batch_id desc{rank_column}
+                        ) as _rn
+                    from ({union_sql})
+                )
+                where _rn = 1
+                """
+            )
+            con.execute("copy consolidated to ? (format parquet)", [str(temp_path)])
+            row_count = con.execute("select count(*) from consolidated").fetchone()[0]
+
+        temp_path.replace(silver_path)
+        return int(row_count)
+
+    def repair_security_code_aliases(
+        self,
+        datasets: list[str] | None = None,
+    ) -> dict[str, tuple[int, int, int]]:
+        selected = datasets or list(DATASETS)
+        results: dict[str, tuple[int, int, int]] = {}
+        for dataset in selected:
+            spec = DATASETS[dataset]
+            path = self.silver_path(dataset)
+            if not path.exists():
+                continue
+            temp_path = path.with_name(f".{path.stem}-{uuid.uuid4().hex}.tmp.parquet")
+            with self.connect() as con:
+                columns = self._silver_columns(con, dataset)
+                code_columns = security_code_columns(dataset, columns)
+                if not code_columns:
+                    continue
+                alias_predicate = " or ".join(
+                    f"{_quote(column)} in ({', '.join(_sql_string(value) for value in SECURITY_CODE_ALIASES)})"
+                    for column in code_columns
+                )
+                before_count, aliased_count = con.execute(
+                    f"""
+                    select
+                        count(*),
+                        count(*) filter (where {alias_predicate})
+                    from read_parquet('{_sql_path(path)}')
+                    """
+                ).fetchone()
+                if not aliased_count:
+                    results[dataset] = (int(before_count), int(before_count), 0)
+                    continue
+
+                mapped_sql = self._canonicalized_read_sql(
+                    spec,
+                    f"read_parquet('{_sql_path(path)}')",
+                    columns,
+                )
+                pk_expr = ", ".join(_quote(col) for col in spec.primary_key)
+                order_columns = [
+                    column
+                    for column in ("_ingested_at", "_batch_id")
+                    if column in columns
+                ]
+                order_sql = ", ".join(f"{_quote(column)} desc" for column in order_columns)
+                if order_sql:
+                    order_sql += ", "
+                order_sql += f"coalesce({_quote(SECURITY_ALIAS_RANK_COLUMN)}, 0) asc"
+                con.execute(
+                    f"""
+                    create or replace temp table canonicalized as
+                    select * exclude (_rn, {SECURITY_ALIAS_RANK_COLUMN})
+                    from (
+                        select
+                            *,
+                            row_number() over (
+                                partition by {pk_expr}
+                                order by {order_sql}
+                            ) as _rn
+                        from ({mapped_sql})
+                    )
+                    where _rn = 1
+                    """
+                )
+                con.execute("copy canonicalized to ? (format parquet)", [str(temp_path)])
+                after_count = con.execute("select count(*) from canonicalized").fetchone()[0]
+            temp_path.replace(path)
+            results[dataset] = (
+                int(before_count),
+                int(after_count),
+                int(aliased_count),
+            )
+        self.create_views()
+        return results
 
     def record_batch_start(self, batch_id: str, spec: DatasetSpec, params: dict[str, Any]) -> None:
         with self.connect() as con:
@@ -365,6 +531,28 @@ class StorageEngine:
     def silver_path(self, dataset: str) -> Path:
         return self.data_root / "silver" / f"{dataset}.parquet"
 
+    def open_trade_dates(self, start: str, end: str) -> set[str] | None:
+        path = self.silver_path("trade_cal")
+        if not path.exists():
+            return None
+        with self.connect() as con:
+            columns = self._silver_columns(con, "trade_cal")
+            if not {"cal_date", "is_open"}.issubset(columns):
+                return None
+            rows = con.execute(
+                """
+                select distinct cast(cal_date as varchar)
+                from read_parquet(?)
+                where cast(is_open as integer) = 1
+                  and cast(cal_date as varchar) between ? and ?
+                """,
+                [str(path), compact_date(start), compact_date(end)],
+            ).fetchall()
+        return {
+            f"{value[:4]}-{value[4:6]}-{value[6:8]}"
+            for (value,) in rows
+        }
+
     def _view_union_sql(self, names: list[str]) -> str:
         parts = []
         for name in names:
@@ -374,6 +562,29 @@ class StorageEngine:
         if not parts:
             return "select null::varchar as dataset where false"
         return " union all by name ".join(parts)
+
+    def _canonicalized_read_sql(
+        self,
+        spec: DatasetSpec,
+        read_expression: str,
+        available_columns: set[str],
+    ) -> str:
+        code_columns = security_code_columns(spec.name, available_columns)
+        if not code_columns:
+            return f"select * from {read_expression}"
+        replacements = ", ".join(
+            f"{_canonical_code_sql(column)} as {_quote(column)}"
+            for column in code_columns
+        )
+        alias_predicate = " or ".join(
+            f"{_quote(column)} in ({', '.join(_sql_string(value) for value in SECURITY_CODE_ALIASES)})"
+            for column in code_columns
+        )
+        return (
+            f"select * replace ({replacements}), "
+            f"case when {alias_predicate} then 1 else 0 end as {_quote(SECURITY_ALIAS_RANK_COLUMN)} "
+            f"from {read_expression}"
+        )
 
     def _create_research_views(self, con: duckdb.DuckDBPyConnection) -> None:
         if self.silver_path("daily").exists() and self.silver_path("adj_factor").exists():
@@ -495,6 +706,7 @@ class StorageEngine:
                     s.is_hs,
                     su.ts_code is not null as is_suspended,
                     case
+                        when s.ts_code is null then false
                         when s.list_date is not null and d.trade_date < s.list_date then false
                         when s.delist_date is not null and d.trade_date > s.delist_date then false
                         else true
@@ -593,6 +805,8 @@ def validate_usability(storage: StorageEngine) -> list[tuple[str, str, str]]:
     storage.create_views()
     results.extend(_validate_queryable_views(storage))
     results.append(_validate_daily_has_adj_factor(storage))
+    results.append(_validate_daily_has_stock_basic(storage))
+    results.append(_validate_no_legacy_security_codes(storage))
     results.append(_validate_daily_covers_open_trade_days(storage))
     results.append(_validate_adjusted_daily_row_count(storage))
     return results
@@ -627,6 +841,62 @@ def _validate_daily_has_adj_factor(storage: StorageEngine) -> tuple[str, str, st
     if missing_count:
         return ("cross:daily_adj_factor", "failed", f"daily rows without adj_factor: {missing_count}")
     return ("cross:daily_adj_factor", "passed", "all daily rows have adj_factor")
+
+
+def _validate_daily_has_stock_basic(storage: StorageEngine) -> tuple[str, str, str]:
+    if not storage.silver_path("daily").exists() or not storage.silver_path("stock_basic").exists():
+        return ("cross:daily_stock_basic", "missing", "daily or stock_basic silver parquet is missing")
+    with storage.connect() as con:
+        daily = _sql_path(storage.silver_path("daily"))
+        stock = _sql_path(storage.silver_path("stock_basic"))
+        missing_count = con.execute(
+            f"""
+            select count(*)
+            from read_parquet('{daily}') d
+            anti join read_parquet('{stock}') s using (ts_code)
+            """
+        ).fetchone()[0]
+    if missing_count:
+        return (
+            "cross:daily_stock_basic",
+            "failed",
+            f"daily rows without stock_basic metadata: {missing_count}",
+        )
+    return ("cross:daily_stock_basic", "passed", "all daily rows have stock_basic metadata")
+
+
+def _validate_no_legacy_security_codes(storage: StorageEngine) -> tuple[str, str, str]:
+    matches: list[str] = []
+    alias_values = ", ".join(_sql_string(value) for value in SECURITY_CODE_ALIASES)
+    with storage.connect() as con:
+        for dataset in DATASETS:
+            path = storage.silver_path(dataset)
+            if not path.exists():
+                continue
+            columns = storage._silver_columns(con, dataset)
+            code_columns = security_code_columns(dataset, columns)
+            if not code_columns:
+                continue
+            predicate = " or ".join(
+                f"{_quote(column)} in ({alias_values})"
+                for column in code_columns
+            )
+            count = con.execute(
+                f"select count(*) from read_parquet('{_sql_path(path)}') where {predicate}"
+            ).fetchone()[0]
+            if count:
+                matches.append(f"{dataset}={count}")
+    if matches:
+        return (
+            "cross:canonical_security_codes",
+            "failed",
+            "legacy security-code rows remain: " + ", ".join(matches),
+        )
+    return (
+        "cross:canonical_security_codes",
+        "passed",
+        "all configured security-code aliases are canonicalized",
+    )
 
 
 def _validate_daily_covers_open_trade_days(storage: StorageEngine) -> tuple[str, str, str]:
@@ -684,3 +954,16 @@ def _quote(identifier: str) -> str:
 
 def _sql_path(path: Path) -> str:
     return str(path).replace("'", "''").replace("\\", "/")
+
+
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _canonical_code_sql(column: str) -> str:
+    quoted = _quote(column)
+    cases = " ".join(
+        f"when {_sql_string(source)} then {_sql_string(target)}"
+        for source, target in SECURITY_CODE_ALIASES.items()
+    )
+    return f"case {quoted} {cases} else {quoted} end"

@@ -85,6 +85,8 @@ class SyncEngine:
             return self._fetch_param_sets(spec, params)
         if spec.strategy == "paged":
             return self._fetch_paged(spec, params)
+        if spec.strategy == "paged_range":
+            return self._fetch_paged(spec, params)
         if spec.strategy != "daily":
             return self.adapter.fetch(spec.api_name, params=params, fields=list(spec.fields) or None)
 

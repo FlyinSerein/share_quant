@@ -1,0 +1,63 @@
+schema_version: 1
+artifact_id: factor_marginal_analysis_v1
+locked_at: "2026-07-18"
+source_factor_config: walk_forward_champion.yaml
+
+protocol:
+  warmup_start: "2021-01-01"
+  research_start: "2022-01-01"
+  train_start: "2022-01-01"
+  train_end: "2024-12-31"
+  oos_start: "2025-01-01"
+  end: null
+  benchmark: "000985.CSI"
+  transaction_cost: 0.001
+  top_quantile: 0.20
+  bucket_count: 10
+  baseline_min_factor_count: 6
+  baseline_factor_count: 11
+  d10_d1_primary: gross_forward_period
+  d10_period_attribution: execution_month
+  group_correlation: mean_monthly_cross_sectional_spearman
+
+fixed_factor_pool:
+  - PE_TTM
+  - Dividend_Yield
+  - Volatility
+  - Main_Net_In
+
+factor_groups:
+  - id: Value
+    name_zh: 价值
+    factors: [PE_TTM, Dividend_Yield]
+  - id: Quality
+    name_zh: 质量
+    factors: [ROE, Debt_to_Equity, Gross_Margin]
+  - id: Growth
+    name_zh: 成长
+    factors: [Revenue_Growth]
+  - id: LowVol
+    name_zh: 低波
+    factors: [Volatility]
+  - id: Momentum
+    name_zh: 动量
+    factors: [Momentum_60D]
+  - id: FundFlow
+    name_zh: 资金流
+    factors: [Main_Net_In]
+  - id: Liquidity
+    name_zh: 流动性
+    factors: [Turnover_20D]
+  - id: Ownership
+    name_zh: 股东结构
+    factors: [Holder_Concen]
+
+oos_periods:
+  - {id: 2025H1, start: "2025-01-01", end: "2025-06-30"}
+  - {id: 2025H2, start: "2025-07-01", end: "2025-12-31"}
+  - {id: 2026YTD, start: "2026-01-01", end: null}
+
+stability:
+  required_positive_subperiods: 2
+  required_negative_subperiods: 2
+  required_full_oos_same_sign: true

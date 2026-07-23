@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .config import load_config, resolve_date
-from .datasets import DATASETS, SYNC_GROUPS
+from .datasets import DATASETS, SYNC_GROUPS, enabled_dataset_names, get_dataset
 from .phased_sync import PhasedSyncRunner
 from .storage import StorageEngine, validate_all
 from .sync import SyncEngine
@@ -43,6 +43,39 @@ def main(argv: list[str] | None = None) -> int:
             failed += int(status != "passed")
         return 1 if failed else 0
 
+    if args.command == "consolidate-bronze":
+        storage.init()
+        datasets = [args.dataset] if args.dataset else enabled_dataset_names(config.datasets)
+        failed = 0
+        for dataset in datasets:
+            try:
+                row_count = storage.consolidate_bronze(get_dataset(dataset))
+            except Exception as exc:
+                failed += 1
+                print(f"{dataset}\tfailed\t{exc}")
+            else:
+                if row_count is None:
+                    print(f"{dataset}\tskipped\tno bronze parquet files")
+                else:
+                    print(f"{dataset}\tsuccess\trows={row_count}")
+        if not failed:
+            storage.create_views()
+        return 1 if failed else 0
+
+    if args.command == "repair-security-codes":
+        storage.init()
+        datasets = [args.dataset] if args.dataset else None
+        results = storage.repair_security_code_aliases(datasets)
+        if not results:
+            print("No silver datasets with security-code columns were found.")
+            return 0
+        for dataset, (before, after, aliased) in results.items():
+            print(
+                f"{dataset}\tsuccess\tbefore={before}\tafter={after}"
+                f"\taliased_rows={aliased}\tremoved={before - after}"
+            )
+        return 0
+
     if args.command in {"sync", "sync-all", "sync-phased"}:
         storage.init()
         start = resolve_date(args.start, config.default_start_date)
@@ -76,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
                 pause_between_chunks=args.pause_between_chunks,
                 dry_run=args.dry_run,
                 create_views_on_finish=not args.bronze_only,
+                checkpoint_every=args.checkpoint_every,
             )
             return 1 if summary.failed and args.stop_on_failure else 0
         if args.command == "sync":
@@ -99,6 +133,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init-db")
     sub.add_parser("status")
     sub.add_parser("validate")
+    consolidate = sub.add_parser(
+        "consolidate-bronze",
+        help="Bulk-deduplicate bronze parquet files into silver after a bronze-only backfill.",
+    )
+    consolidate.add_argument("--dataset", choices=sorted(DATASETS), default=None)
+    repair_codes = sub.add_parser(
+        "repair-security-codes",
+        help="Map historical stock-code aliases to current codes and deduplicate silver data.",
+    )
+    repair_codes.add_argument("--dataset", choices=sorted(DATASETS), default=None)
 
     sync = sub.add_parser("sync")
     sync.add_argument("--dataset", required=True, choices=sorted(DATASETS))
@@ -117,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_phased.add_argument("--progress-log", default=None)
     sync_phased.add_argument("--rate-limit-seconds", type=float, default=None)
     sync_phased.add_argument("--pause-between-chunks", type=float, default=0.0)
+    sync_phased.add_argument("--checkpoint-every", type=int, default=1)
     sync_phased.add_argument("--no-resume", action="store_true")
     sync_phased.add_argument("--stop-on-failure", action="store_true")
     sync_phased.add_argument("--dry-run", action="store_true")

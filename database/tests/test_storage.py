@@ -11,6 +11,89 @@ from share_quant.storage import StorageEngine, validate_usability
 
 
 class StorageEngineTest(unittest.TestCase):
+    def test_consolidate_bronze_bulk_deduplicates_and_preserves_silver(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageEngine(root / "data", root / "data" / "share_quant.duckdb")
+            storage.init()
+            spec = get_dataset("daily")
+            storage.upsert_silver(
+                spec,
+                pd.DataFrame(
+                    [{"ts_code": "000002.SZ", "trade_date": "20210104", "close": 20.0}]
+                ),
+                "batch-existing",
+            )
+            storage.write_bronze(
+                spec,
+                pd.DataFrame(
+                    [{"ts_code": "000001.SZ", "trade_date": "20210104", "close": 10.0}]
+                ),
+                "batch-1",
+                {},
+            )
+            storage.write_bronze(
+                spec,
+                pd.DataFrame(
+                    [{"ts_code": "000001.SZ", "trade_date": "20210104", "close": 11.0}]
+                ),
+                "batch-2",
+                {},
+            )
+
+            count = storage.consolidate_bronze(spec)
+
+            self.assertEqual(count, 2)
+            with storage.connect() as con:
+                rows = con.execute(
+                    "select ts_code, trade_date, close from read_parquet(?) order by ts_code",
+                    [str(storage.silver_path("daily"))],
+                ).fetchall()
+                columns = {
+                    row[0]
+                    for row in con.execute(
+                        "describe select * from read_parquet(?)",
+                        [str(storage.silver_path("daily"))],
+                    ).fetchall()
+                }
+            self.assertEqual(
+                rows,
+                [
+                    ("000001.SZ", "20210104", 11.0),
+                    ("000002.SZ", "20210104", 20.0),
+                ],
+            )
+            self.assertNotIn("_api_name", columns)
+            self.assertNotIn("_params_json", columns)
+
+    def test_consolidate_bronze_canonicalizes_security_code_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageEngine(root / "data", root / "data" / "share_quant.duckdb")
+            storage.init()
+            spec = get_dataset("daily")
+            storage.write_bronze(
+                spec,
+                pd.DataFrame(
+                    [
+                        {"ts_code": "000043.SZ", "trade_date": "20210104", "close": 10.0},
+                        {"ts_code": "001914.SZ", "trade_date": "20210104", "close": 11.0},
+                    ]
+                ),
+                "batch-aliases",
+                {},
+            )
+
+            count = storage.consolidate_bronze(spec)
+
+            self.assertEqual(count, 1)
+            with storage.connect() as con:
+                rows = con.execute(
+                    "select ts_code, trade_date, close from read_parquet(?)",
+                    [str(storage.silver_path("daily"))],
+                ).fetchall()
+            self.assertEqual(rows, [("001914.SZ", "20210104", 11.0)])
+
     def test_upsert_keeps_latest_batch_per_primary_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -40,6 +123,63 @@ class StorageEngineTest(unittest.TestCase):
                     [str(storage.silver_path("daily"))],
                 ).fetchall()
             self.assertEqual(rows, [("000001.SZ", "20210104", 11.0), ("000002.SZ", "20210104", 20.0)])
+
+    def test_upsert_canonicalizes_security_code_aliases_and_prefers_current_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageEngine(root / "data", root / "data" / "share_quant.duckdb")
+            storage.init()
+            spec = get_dataset("daily")
+
+            count = storage.upsert_silver(
+                spec,
+                pd.DataFrame(
+                    [
+                        {"ts_code": "300114.SZ", "trade_date": "20210104", "close": 10.0},
+                        {"ts_code": "302132.SZ", "trade_date": "20210104", "close": 11.0},
+                    ]
+                ),
+                "batch-aliases",
+            )
+
+            self.assertEqual(count, 1)
+            with storage.connect() as con:
+                rows = con.execute(
+                    "select ts_code, trade_date, close from read_parquet(?)",
+                    [str(storage.silver_path("daily"))],
+                ).fetchall()
+            self.assertEqual(rows, [("302132.SZ", "20210104", 11.0)])
+
+    def test_repair_security_code_aliases_rewrites_existing_silver(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageEngine(root / "data", root / "data" / "share_quant.duckdb")
+            storage.init()
+            path = storage.silver_path("moneyflow")
+            storage._write_parquet(
+                pd.DataFrame(
+                    [
+                        {
+                            "ts_code": "000043.SZ",
+                            "trade_date": "20210104",
+                            "buy_lg_amount": 1.0,
+                            "_batch_id": "legacy",
+                            "_ingested_at": "2021-01-05T00:00:00Z",
+                        }
+                    ]
+                ),
+                path,
+            )
+
+            results = storage.repair_security_code_aliases(["moneyflow"])
+
+            self.assertEqual(results["moneyflow"], (1, 1, 1))
+            with storage.connect() as con:
+                rows = con.execute(
+                    "select ts_code, trade_date from read_parquet(?)",
+                    [str(path)],
+                ).fetchall()
+            self.assertEqual(rows, [("001914.SZ", "20210104")])
 
     def test_validate_reports_missing_primary_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -243,6 +383,34 @@ class StorageEngineTest(unittest.TestCase):
                 ).fetchone()
 
             self.assertEqual(row, ("000001.SZ", "20210104", "平安银行", None, True, False))
+
+    def test_stock_universe_does_not_list_daily_rows_without_stock_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            storage = StorageEngine(root / "data", root / "data" / "share_quant.duckdb")
+            storage.init()
+            storage.upsert_silver(
+                get_dataset("daily"),
+                pd.DataFrame([{"ts_code": "301999.SZ", "trade_date": "20210104", "close": 10.0}]),
+                "batch-daily",
+            )
+            storage.upsert_silver(
+                get_dataset("stock_basic"),
+                pd.DataFrame([{"ts_code": "000001.SZ", "name": "平安银行"}]),
+                "batch-stock",
+            )
+            storage.create_views()
+
+            with storage.connect() as con:
+                row = con.execute(
+                    """
+                    select name, is_listed_on_date
+                    from v_stock_universe_daily
+                    where ts_code = '301999.SZ'
+                    """
+                ).fetchone()
+
+            self.assertEqual(row, (None, False))
 
 
 if __name__ == "__main__":

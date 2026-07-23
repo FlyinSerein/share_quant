@@ -1,0 +1,16 @@
+﻿check,status,critical,detail
+adjusted_return_coverage,passed,True,"min=20150105, max=20260720, rows=11505611"
+benchmark_coverage,passed,True,"benchmark=000985.CSI, min=20150105, max=20260720, rows=2804"
+catalog:__database__:cross:daily_adj_factor,passed,True,all daily rows have adj_factor (checked_at=2026-07-20T17:37:43Z)
+catalog:__database__:cross:daily_trade_calendar,passed,True,daily covers open trade days in its date range (checked_at=2026-07-20T17:37:43Z)
+catalog:__database__:view:v_adjusted_returns,passed,True,queryable rows=11505611 (checked_at=2026-07-20T17:37:43Z)
+catalog:__database__:view:v_fina_indicator_asof_intervals,passed,True,queryable rows=410325 (checked_at=2026-07-20T17:37:43Z)
+catalog:__database__:view:v_index_data,passed,True,queryable rows=820823 (checked_at=2026-07-20T17:37:42Z)
+catalog:__database__:view:v_stock_universe_daily,passed,True,queryable rows=11505611 (checked_at=2026-07-20T17:37:43Z)
+catalog:fina_indicator_vip:dataset_integrity,warning,False,rows with null or empty primary key values in required columns: 10 (checked_at=2026-07-20T17:37:34Z); rows without announcement visibility are excluded by the existing factor loader
+frozen_factor_availability,passed,True,"factor_count=11, first_volatility=20160129"
+evaluation_boundary,passed,True,"first_signal=20160129, first_execution=20160201"
+shared_strategy_calendar,passed,True,"expected_signals=126, strategy_signals={'Full11_Equal': 126, 'Grouped8_Equal': 126, 'Fixed4_Equal': 126}, duplicates=0"
+benchmark_alignment_through_20260720,passed,True,missing_strategy_day_benchmark_rows=0
+benchmark_alignment_through_20260707,passed,True,missing_strategy_day_benchmark_rows=0
+reference_2025_to_20260707_reproduction,warning,False,within_tolerance=3/42; the archived CSV was produced from an earlier database snapshot and is retained as a drift diagnostic

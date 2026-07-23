@@ -1,195 +1,118 @@
 # AGENTS.md
 
-本文件用于指导 AI 编码代理在本仓库中进行因子构建、数据查询与回测相关开发。仓库当前核心能力是基于 Tushare Pro、DuckDB 和 Parquet 的本地 A 股研究数据库；新增因子或回测功能时，应优先复用现有数据层、研究视图和测试模式。
+本文件指导 AI 编码代理维护 `database/` 数据库子项目。本项目只负责构建和维护本地 A 股研究数据库，不负责因子构建、组合回测或研究报告；这些功能属于相邻的 `factor_research/` 项目。
 
-## 项目概览
+## 项目职责
 
-- Python 包目录：`src/share_quant/`
-- 配置文件：`configs/default.yaml`
-- 本地数据库：`data/share_quant.duckdb`
-- 原始分批数据：`data/bronze/<dataset>/*.parquet`
-- 去重后的研究数据：`data/silver/<dataset>.parquet`
-- 测试目录：`tests/`
-- CLI 入口：`share-quant = share_quant.cli:main`
+- 数据源：Tushare Pro。
+- 存储：DuckDB catalog + Parquet 数据文件。
+- 功能：数据集定义、同步、去重、研究视图、状态管理和数据质量校验。
+- Python 包：`src/share_quant/`。
+- 配置：`configs/default.yaml`。
+- 本地数据库：`data/share_quant.duckdb`。
+- 原始数据：`data/bronze/<dataset>/*.parquet`。
+- 研究数据：`data/silver/<dataset>.parquet`。
+- 测试：`tests/`。
+- CLI：`share-quant = share_quant.cli:main`。
 
-项目使用 DuckDB catalog 管理元数据和视图，使用 Parquet 保存实际数据。不要绕过 `StorageEngine` 随意改写 `data/silver`，除非任务明确要求修复数据文件，并且已经说明影响范围。
+禁止在本项目中新增因子、中性化、投资组合、回测、绩效分析或报告生成代码。因子项目只能通过只读连接使用本项目公开的数据接口。
 
 ## 关键模块
 
-- `src/share_quant/datasets.py`：所有数据集定义、主键、同步策略、日期字段、分组。
-- `src/share_quant/storage.py`：DuckDB 初始化、bronze/silver 写入、去重 upsert、研究视图、数据校验。
+- `src/share_quant/datasets.py`：数据集定义、主键、同步策略、日期字段和分组。
+- `src/share_quant/storage.py`：DuckDB 初始化、bronze/silver 写入、去重 upsert、研究视图和数据校验。
 - `src/share_quant/sync.py`：单数据集和全量同步逻辑。
-- `src/share_quant/phased_sync.py`：分组、分块、可断点续跑同步。
+- `src/share_quant/phased_sync.py`：分组、分块和断点续跑同步。
 - `src/share_quant/tushare_adapter.py`：Tushare API 适配层。
 - `src/share_quant/cli.py`：命令行入口和参数定义。
 
-新增研究能力时，先确认是否能通过现有视图完成；只有当视图缺失必要字段或语义时，再扩展 `storage.py` 中的研究视图。
+不要绕过 `StorageEngine` 随意改写 `data/silver`。只有任务明确要求修复数据文件并说明影响范围时，才允许直接处理数据文件。
 
-## 数据集与研究视图
+## 公共数据接口
 
-常用研究视图：
+以下 DuckDB 研究视图是提供给 `factor_research/` 的公共只读接口：
 
-- `v_adjusted_daily`：日行情、复权因子、后复权价、前复权价。
-- `v_adjusted_returns`：基于后复权收盘价的日收益率 `return_adjusted`。
-- `v_stock_universe_daily`：逐日股票池，包含上市状态、停牌状态、ST 名称标记。
-- `v_fina_indicator_asof_intervals`：财务指标公告可见区间。
-- `v_income_asof_intervals`、`v_balancesheet_asof_intervals`、`v_cashflow_asof_intervals`：三大报表公告可见区间。
-- `v_index_data`：指数基础、指数日线、指数权重合并视图。
-- `v_industry_data`：申万行业分类和成分合并视图。
+- `v_adjusted_daily`
+- `v_adjusted_returns`
+- `v_stock_universe_daily`
+- `v_fina_indicator_asof_intervals`
+- `v_income_asof_intervals`
+- `v_balancesheet_asof_intervals`
+- `v_cashflow_asof_intervals`
+- `v_index_data`
+- `v_industry_data`
 
-实际数据表不以 DuckDB base table 形式保存，通常应通过视图或 `read_parquet('data/silver/<dataset>.parquet')` 查询。
+修改这些视图时必须：
 
-## 因子构建规则
+1. 保持现有字段名称和语义兼容，除非任务明确要求破坏性变更。
+2. 明确日期格式、主键、空值和公告可见性语义。
+3. 补充 `tests/test_storage.py` 测试。
+4. 同时运行相邻 `factor_research/` 的测试，验证消费者兼容性。
 
-- 日期字段在数据层通常是 `YYYYMMDD` 字符串；CLI 参数使用 `YYYY-MM-DD`。
-- 行情类因子优先使用 `v_adjusted_daily` 或 `v_adjusted_returns`，避免自行拼接 `daily` 和 `adj_factor`。
-- 股票池过滤优先使用 `v_stock_universe_daily`：
-  - 排除未上市或已退市交易日：`is_listed_on_date = true`
-  - 根据策略决定是否排除停牌：`is_suspended = false`
-  - 根据策略决定是否排除 ST：`is_st_name = false`
-- 财务类因子必须按公告可见时间做 as-of join，优先使用 `*_asof_intervals` 视图：
-  - 只能在 `trade_date >= visible_from`
-  - 如使用区间，限制 `trade_date < next_visible_from`，`next_visible_from is null` 表示当前最新可见记录
-  - 不要用报告期 `end_date` 直接对齐交易日后向填充，这会引入未来函数
-- 横截面因子应明确中性化、标准化、缺失值、极值处理规则；实现时把这些规则写成可测试的小函数。
-- 避免在因子计算中隐式读取“当前最新”全量财务数据，除非任务明确是截面最新快照而非历史回测。
+财务历史数据必须以公告可见时间为准。`*_asof_intervals` 应保证 `visible_from` 和 `next_visible_from` 区间语义正确，不能使用报告期直接后向填充交易日而引入未来数据。
 
-## 回测规则
+## 开发规则
 
-- 默认假设信号在交易日收盘后生成，下一个可交易日成交；如果任务需要盘中或当日收盘成交，必须在代码和测试中显式说明。
-- 收益率优先使用 `v_adjusted_returns.return_adjusted`；组合收益计算要清楚处理停牌、涨跌停、缺失价格和退市。
-- 每次调仓都要用当时可见的股票池、行业、指数成分和财务数据。
-- 基准优先从 `v_index_data` 中取主流指数日线，例如沪深 300、中证 500、中证 1000、全指。
-- 不要把全样本统计量泄漏到历史截面中；滚动窗口、分位点、标准化参数都应只使用当期及以前数据。
-- 回测输出至少包含：样本区间、股票池规则、调仓频率、交易成本假设、年化收益、波动率、最大回撤、Sharpe、换手率、基准及超额收益。
-
-## 开发约定
-
-- 优先保持现有轻量结构；新增功能可放在 `src/share_quant/factors.py`、`src/share_quant/backtest.py`，或在功能扩大后拆成 `factors/`、`backtest/` 包。
-- 使用 DuckDB SQL 处理大表连接和窗口计算，使用 pandas 处理较小结果集和指标汇总。
-- 对 SQL 标识符要考虑保留字和特殊列名；参考 `storage.py` 中的 `_quote()`。
-- 不要提交 `.env`、Tushare token、临时 notebook 输出或大规模生成结果。
-- 不要把 `data/bronze`、`data/silver`、`data/*.duckdb` 的大文件改动作为普通代码改动提交，除非任务明确是数据快照更新。
-- 生成实验结果时优先写入 `data/research/` 或任务指定目录，并在 `.gitignore` 规则允许时避免纳入版本控制。
+- 新增数据集时优先复用 `DatasetSpec`、现有同步流程和 bronze/silver upsert 模式。
+- 大表连接、窗口计算和视图构建优先使用 DuckDB SQL。
+- SQL 标识符必须考虑保留字和特殊列名，参考 `storage.py` 中的 `_quote()`。
+- 日期字段在数据层通常使用 `YYYYMMDD` 字符串；CLI 参数使用 `YYYY-MM-DD`。
+- 测试不得请求真实 Tushare 网络，沿用 fake adapter 和手写 fixture。
+- 不提交 `.env`、Tushare token、`data/` 大文件、临时数据库、缓存或生成结果。
+- 不得无意修改 `data/bronze`、`data/silver`、`data/catalog`、`data/quarantine` 或 `data/*.duckdb`。
+- 修改公开视图时优先兼容已有消费者；确需变更接口时，应同步修改文档、测试和 `factor_research/` 调用。
 
 ## 常用命令
 
-初始化数据库：
+以下命令均从 `database/` 目录运行：
 
 ```powershell
 python -m share_quant.cli init-db
-```
-
-查看同步状态：
-
-```powershell
 python -m share_quant.cli status
-```
-
-运行数据校验：
-
-```powershell
 python -m share_quant.cli validate
-```
-
-同步单个数据集：
-
-```powershell
 python -m share_quant.cli sync --dataset daily --start 2021-01-01 --end today
-```
-
-分阶段同步：
-
-```powershell
 python -m share_quant.cli sync-phased --start 2021-01-01 --end today --rate-limit-seconds 0.5 --pause-between-chunks 0.2
-```
-
-运行测试：
-
-```powershell
 python -m pytest
 ```
 
-真实同步前需要设置环境变量：
+真实同步前由用户在本地设置环境变量：
 
 ```powershell
 $env:TUSHARE_TOKEN = "your-token"
 ```
 
+不要读取、输出或提交 token 内容。
+
 ## 测试要求
 
-- 新增数据集、主键、同步策略时，补充 `tests/test_sync.py` 或相关测试。
-- 修改存储、视图、校验逻辑时，补充 `tests/test_storage.py`。
-- 新增因子函数时，使用小型手写 DataFrame fixture 验证：
-  - 日期排序
-  - 复权价格选择
-  - 缺失值处理
-  - 横截面排名或标准化
-  - 是否避免未来数据
-- 新增回测函数时，至少覆盖：
-  - 信号日到成交日的滞后
-  - 调仓权重归一化
-  - 缺失收益率处理
-  - 交易成本
-  - 指标计算
-- 测试不能依赖真实 Tushare 网络请求；沿用现有 fake adapter / fixture 风格。
+- 新增或修改数据集、主键、同步策略：补充 `tests/test_sync.py` 或相关同步测试。
+- 修改存储、去重、视图或校验逻辑：补充 `tests/test_storage.py`。
+- 修改 CLI：补充 `tests/test_cli.py`。
+- 修改分阶段同步：补充 `tests/test_phased_sync.py`。
+- 测试应覆盖正常路径、空数据、重复数据、日期边界和失败恢复等相关场景。
 
 ## 数据质量检查
 
-在依赖本地数据库进行研究前，先运行：
+依赖本地数据库开展研究前，应运行：
 
 ```powershell
 python -m share_quant.cli validate
 ```
 
-重点关注：
+重点确认：
 
-- `cross:daily_adj_factor` 是否通过。
-- `cross:daily_trade_calendar` 是否通过。
-- `view:v_adjusted_daily_row_count` 是否通过。
-- 所需研究视图是否 queryable 且行数非零。
+- `cross:daily_adj_factor` 通过。
+- `cross:daily_trade_calendar` 通过。
+- `view:v_adjusted_daily_row_count` 通过。
+- 所有公共研究视图可查询且必要视图行数非零。
 
-如果校验失败，不要直接继续做因子结论；先定位缺失的数据集或异常日期范围。
-
-## 查询示例
-
-示例：读取可交易股票池和复权收益。
-
-```sql
-select
-    r.ts_code,
-    r.trade_date,
-    r.return_adjusted
-from v_adjusted_returns r
-join v_stock_universe_daily u
-  on r.ts_code = u.ts_code
- and r.trade_date = u.trade_date
-where u.is_listed_on_date = true
-  and u.is_suspended = false
-  and u.is_st_name = false
-  and r.trade_date between '20210101' and '20211231';
-```
-
-示例：财务指标按公告日可见区间对齐交易日。
-
-```sql
-select
-    d.ts_code,
-    d.trade_date,
-    f.roe,
-    f.end_date,
-    f.visible_from
-from v_adjusted_daily d
-join v_fina_indicator_asof_intervals f
-  on d.ts_code = f.ts_code
- and d.trade_date >= f.visible_from
- and (f.next_visible_from is null or d.trade_date < f.next_visible_from);
-```
+校验失败时先定位缺失数据集、异常日期或视图路径，不应在数据质量未知时向因子项目提供研究结论。
 
 ## 完成任务前检查
 
-- 代码是否复用现有 `DatasetSpec`、`StorageEngine`、研究视图和 CLI 约定。
-- 是否避免未来函数和全样本泄漏。
-- 是否没有无意改动本地大数据文件、`.env` 或用户已有改动。
-- 是否运行了与改动范围匹配的测试；无法运行时说明原因。
-- 涉及研究结论时，是否写明样本区间、股票池、调仓和交易成本假设。
+- 是否严格保持数据库项目职责，没有混入因子或回测代码。
+- 是否复用了 `DatasetSpec`、`StorageEngine`、同步流程和研究视图约定。
+- 是否保持公共视图兼容并避免未来数据。
+- 是否没有无意改动大数据文件、`.env` 或用户已有改动。
+- 是否运行了与改动范围匹配的数据库测试。
+- 涉及公共接口时，是否运行了 `factor_research/` 兼容性测试。

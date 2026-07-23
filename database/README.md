@@ -7,7 +7,7 @@
 - 数据源：Tushare Pro
 - 存储：DuckDB catalog + Parquet 数据文件
 - 范围：沪深京 A 股
-- 默认区间：2021-01-01 至当前日期
+- 默认区间：2015-01-01 至当前日期
 - 凭证：从环境变量 `TUSHARE_TOKEN` 读取，不写入仓库
 
 ## 已覆盖的数据域
@@ -34,8 +34,9 @@
 
 ```powershell
 share-quant init-db
-share-quant sync --dataset daily --start 2021-01-01 --end today
-share-quant sync-all --start 2021-01-01 --end today
+share-quant sync --dataset daily --start 2015-01-01 --end today
+share-quant sync-all --start 2015-01-01 --end today
+share-quant repair-security-codes
 share-quant status
 share-quant validate
 ```
@@ -59,7 +60,15 @@ $env:TUSHARE_TOKEN = "your-token"
 ## 安全的全量分阶段同步
 
 ```powershell
-share-quant sync-phased --start 2021-01-01 --end today --rate-limit-seconds 0.5 --pause-between-chunks 0.2
+share-quant sync-phased --start 2015-01-01 --end today --rate-limit-seconds 0.5 --pause-between-chunks 0.2
 ```
 
 该命令会按数据集分组执行，按数据集配置拆分日期区间，默认从 `data/catalog/sync_phased_checkpoint.json` 断点续跑，失败 chunk 记录到 `data/catalog/sync_phased_progress.jsonl` 后跳过，并在每次 Tushare 请求前按限速等待。
+
+大跨度历史回填时，可以先只写 bronze，避免每个日期分块都重写完整 silver 文件；抓取完成后再批量去重合并：
+
+```powershell
+share-quant sync-phased --start 2015-01-01 --end today --rate-limit-seconds 0.25 --checkpoint-every 100 --bronze-only
+share-quant consolidate-bronze
+share-quant validate
+```

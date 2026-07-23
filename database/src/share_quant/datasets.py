@@ -127,40 +127,40 @@ DATASETS: dict[str, DatasetSpec] = {
         api_name="income_vip",
         layer="silver",
         primary_key=("ts_code", "ann_date", "f_ann_date", "end_date", "report_type", "comp_type", "end_type", "update_flag"),
-        strategy="financial",
+        strategy="paged_range",
         date_field="ann_date",
         group="finance",
-        default_chunk_days=1,
+        default_chunk_days=31,
     ),
     "balancesheet_vip": DatasetSpec(
         name="balancesheet_vip",
         api_name="balancesheet_vip",
         layer="silver",
         primary_key=("ts_code", "ann_date", "f_ann_date", "end_date", "report_type", "comp_type", "end_type", "update_flag"),
-        strategy="financial",
+        strategy="paged_range",
         date_field="ann_date",
         group="finance",
-        default_chunk_days=1,
+        default_chunk_days=31,
     ),
     "cashflow_vip": DatasetSpec(
         name="cashflow_vip",
         api_name="cashflow_vip",
         layer="silver",
         primary_key=("ts_code", "ann_date", "f_ann_date", "end_date", "report_type", "comp_type", "end_type", "update_flag"),
-        strategy="financial",
+        strategy="paged_range",
         date_field="ann_date",
         group="finance",
-        default_chunk_days=1,
+        default_chunk_days=31,
     ),
     "fina_indicator_vip": DatasetSpec(
         name="fina_indicator_vip",
         api_name="fina_indicator_vip",
         layer="silver",
         primary_key=("ts_code", "ann_date", "end_date", "update_flag"),
-        strategy="daily",
+        strategy="paged_range",
         date_field="ann_date",
         group="finance",
-        default_chunk_days=1,
+        default_chunk_days=31,
     ),
     "dividend": DatasetSpec(
         name="dividend",
@@ -177,20 +177,20 @@ DATASETS: dict[str, DatasetSpec] = {
         api_name="top10_holders",
         layer="silver",
         primary_key=("ts_code", "ann_date", "end_date", "holder_name"),
-        strategy="financial",
+        strategy="paged_range",
         date_field="ann_date",
         group="corporate",
-        default_chunk_days=1,
+        default_chunk_days=31,
     ),
     "top10_floatholders": DatasetSpec(
         name="top10_floatholders",
         api_name="top10_floatholders",
         layer="silver",
         primary_key=("ts_code", "ann_date", "end_date", "holder_name"),
-        strategy="financial",
+        strategy="paged_range",
         date_field="ann_date",
         group="corporate",
-        default_chunk_days=1,
+        default_chunk_days=31,
     ),
     "moneyflow": DatasetSpec(
         name="moneyflow",
@@ -285,6 +285,17 @@ DATASETS: dict[str, DatasetSpec] = {
         group="industry",
     ),
 }
+
+TRADING_DAY_DATASETS = frozenset(
+    {
+        "daily",
+        "daily_basic",
+        "adj_factor",
+        "stk_limit",
+        "moneyflow",
+        "top_list",
+    }
+)
 
 
 SYNC_GROUPS: dict[str, tuple[str, ...]] = {

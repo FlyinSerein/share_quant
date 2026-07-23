@@ -1,0 +1,44 @@
+{
+  "label": "不优于基准",
+  "evaluation_period": {
+    "start": "20160201",
+    "end": "20260720"
+  },
+  "complete_years": [
+    2017,
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
+  "required_winning_years": 6,
+  "winning_years": {
+    "d10_d1": 1,
+    "top20_excess": 2
+  },
+  "full_period_return_gates": {
+    "d10_d1": false,
+    "top20_excess": false
+  },
+  "annual_stability_gates": {
+    "d10_d1": false,
+    "top20_excess": false
+  },
+  "bootstrap_significance_gates": {
+    "d10_d1": false,
+    "top20_excess": false
+  },
+  "drawdown_gates": {
+    "d10_d1": false,
+    "top20": false
+  },
+  "turnover_gates": {
+    "d10_d1": false,
+    "top20": false
+  },
+  "critical_quality_failures": []
+}
